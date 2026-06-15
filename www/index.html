@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+        <title>Zig Games · WASM</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                background: #0d1117;
+                color: #c9d1d9;
+                font-family: system-ui;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                min-height: 100vh;
+            }
+            h1 {
+                font-size: 1.2rem;
+                color: #58a6ff;
+                margin: 6px 0;
+            }
+            nav {
+                display: flex;
+                gap: 4px;
+                margin-bottom: 4px;
+            }
+            nav button {
+                padding: 5px 12px;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                background: #161b22;
+                color: #c9d1d9;
+                cursor: pointer;
+                font-size: 0.8rem;
+            }
+            nav button.active {
+                background: #1f6feb;
+                border-color: #1f6feb;
+                color: #fff;
+            }
+            #info {
+                font-size: 0.85rem;
+                margin: 2px 0;
+                min-height: 20px;
+                color: #3fb950;
+            }
+            canvas {
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                background: #0d1117;
+                image-rendering: pixelated;
+            }
+            .ctrl {
+                color: #8b949e;
+                font-size: 0.72rem;
+                margin-top: 3px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Zig → WebAssembly 游戏</h1>
+        <nav>
+            <button onclick="switchGame('snake')" class="active" id="btn-snake">
+                贪吃蛇
+            </button>
+            <button onclick="switchGame('tetris')" id="btn-tetris">
+                俄罗斯方块
+            </button>
+            <button onclick="switchGame('2048')" id="btn-2048">2048</button>
+            <button onclick="switchGame('life')" id="btn-life">生命游戏</button>
+            <button onclick="switchGame('raytrace')" id="btn-raytrace">
+                光线追踪
+            </button>
+        </nav>
+        <div id="info"></div>
+        <canvas id="c"></canvas>
+        <div class="ctrl" id="ctrls"></div>
+        <script>
+            const loaded = {},
+                canvas = document.getElementById("c"),
+                ctx = canvas.getContext("2d");
+            let animId,
+                gameLoop = null,
+                globalKey = null;
+            async function loadWasm(name) {
+                if (loaded[name]) return loaded[name];
+                const r = await fetch(`wasm/${name}.wasm`);
+                const buf = await r.arrayBuffer();
+                const { instance } = await WebAssembly.instantiate(buf, {
+                    env: { memory: new WebAssembly.Memory({ initial: 1 }) },
+                });
+                loaded[name] = {
+                    exports: instance.exports,
+                    m8: new Uint8Array(instance.exports.memory.buffer),
+                    m16: new Uint16Array(instance.exports.memory.buffer),
+                };
+                return loaded[name];
+            }
+            async function switchGame(name) {
+                document
+                    .querySelectorAll("nav button")
+                    .forEach((b) => b.classList.remove("active"));
+                document.getElementById("btn-" + name).classList.add("active");
+                if (animId) cancelAnimationFrame(animId);
+                if (gameLoop && gameLoop.stop) gameLoop.stop();
+                if (globalKey)
+                    document.removeEventListener("keydown", globalKey);
+                globalKey = null;
+                gameLoop = null;
+                if (name === "snake") await startSnake();
+                else if (name === "tetris") await startTetris();
+                else if (name === "2048") await start2048();
+                else if (name === "life") await startLife();
+                else if (name === "raytrace") await startRaytrace();
+            }
+
+            // 共享的俄罗斯方块形状和旋转
+            const SHAPES = [
+                [0b0000, 0b1111, 0b0000, 0b0000], // I
+                [0b0110, 0b0110, 0b0000, 0b0000], // O
+                [0b0100, 0b1110, 0b0000, 0b0000], // T
+                [0b0110, 0b1100, 0b0000, 0b0000], // S
+                [0b1100, 0b0110, 0b0000, 0b0000], // Z
+                [0b1000, 0b1110, 0b0000, 0b0000], // J
+                [0b0010, 0b1110, 0b0000, 0b0000], // L
+            ];
+            function rot4(s) {
+                let t = [0, 0, 0, 0];
+                for (let r = 0; r < 4; r++)
+                    for (let c = 0; c < 4; c++)
+                        if ((s[r] >> (3 - c)) & 1) t[c] |= 1 << (3 - r);
+                return t.map(
+                    (v) =>
+                        ((v & 1) << 3) |
+                        ((v & 2) << 1) |
+                        ((v & 4) >> 1) |
+                        ((v & 8) >> 3),
+                );
+            }
+            function getShape(type, rot) {
+                let s = SHAPES[type];
+                for (let i = 0; i < rot; i++) s = rot4(s);
+                return s;
+            }
+
+            // ── 贪吃蛇 ──
+            async function startSnake() {
+                const lm = await loadWasm("snake"),
+                    w = lm.exports;
+                const W = w.snake_get_width(),
+                    H = w.snake_get_height(),
+                    CELL = 14;
+                canvas.width = W * CELL;
+                canvas.height = H * CELL;
+                document.getElementById("ctrls").textContent =
+                    "方向键/WASD 控制";
+                let last = 0,
+                    len = 3,
+                    over = false;
+                w.snake_init(Date.now() >>> 0);
+                len = w.snake_get_len();
+                const YOFF = 500;
+                function draw() {
+                    const base = w.snake_get_state() >>> 1;
+                    const m16 = lm.m16;
+                    ctx.fillStyle = "#0d1117";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    const food = w.snake_get_food();
+                    ctx.fillStyle = "#f85149";
+                    ctx.fillRect(
+                        (food & 0xffff) * CELL,
+                        ((food >>> 16) & 0xffff) * CELL,
+                        CELL - 1,
+                        CELL - 1,
+                    );
+                    for (let i = 0; i < len; i++) {
+                        ctx.fillStyle =
+                            i === 0
+                                ? "#3fb950"
+                                : `hsl(${(i * 30) % 360},70%,50%)`;
+                        ctx.fillRect(
+                            m16[base + i] * CELL,
+                            m16[base + YOFF + i] * CELL,
+                            CELL - 1,
+                            CELL - 1,
+                        );
+                    }
+                    document.getElementById("info").textContent =
+                        `得分: ${w.snake_get_score()}`;
+                }
+                function loop(ts) {
+                    if (over) return;
+                    if (ts - last >= 130) {
+                        last = ts;
+                        w.snake_step();
+                        len = w.snake_get_len();
+                        if (w.snake_is_game_over()) {
+                            over = true;
+                            draw();
+                            document.getElementById("info").textContent =
+                                `游戏结束! 得分: ${w.snake_get_score()}`;
+                            return;
+                        }
+                    }
+                    draw();
+                    animId = requestAnimationFrame(loop);
+                }
+                animId = requestAnimationFrame(loop);
+                globalKey = (e) => {
+                    if (over) return;
+                    const d = {
+                        ArrowUp: 0,
+                        ArrowDown: 1,
+                        ArrowLeft: 2,
+                        ArrowRight: 3,
+                        w: 0,
+                        s: 1,
+                        a: 2,
+                        d: 3,
+                    }[e.key];
+                    if (d !== undefined) {
+                        e.preventDefault();
+                        w.snake_set_direction(d);
+                    }
+                };
+                document.addEventListener("keydown", globalKey);
+                gameLoop = { stop() {} };
+            }
+
+            // ── 俄罗斯方块 ──
+            async function startTetris() {
+                const lm = await loadWasm("tetris"),
+                    w = lm.exports;
+                const BW = 10,
+                    BH = 20,
+                    CELL = 22;
+                canvas.width = BW * CELL + 120;
+                canvas.height = BH * CELL;
+                document.getElementById("ctrls").textContent =
+                    "← → 移动 | ↑ 旋转 | ↓ 软降 | 空格 硬降";
+                const colors = [
+                    "#1c2128",
+                    "#58a6ff",
+                    "#f0883e",
+                    "#3fb950",
+                    "#f85149",
+                    "#a371f7",
+                    "#d29922",
+                    "#79c0ff",
+                ];
+                let last = 0,
+                    over = false;
+                w.tetris_init(Date.now() >>> 0);
+                function draw() {
+                    ctx.fillStyle = "#0d1117";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    const base = w.tetris_get_board();
+                    const m8 = lm.m8;
+
+                    // 画已固定的方块
+                    for (let y = 0; y < BH; y++)
+                        for (let x = 0; x < BW; x++) {
+                            const v = m8[base + y * BW + x];
+                            if (v > 0) {
+                                ctx.fillStyle = colors[v];
+                                ctx.fillRect(
+                                    x * CELL,
+                                    y * CELL,
+                                    CELL - 1,
+                                    CELL - 1,
+                                );
+                            }
+                        }
+
+                    // 画当前下落中的方块
+                    const info = w.tetris_get_piece_info();
+                    const ptype = info & 0xff;
+                    const prot = (info >> 8) & 0xff;
+                    const px = (((info >> 16) & 0xff) << 24) >> 24; // sign-extend i8
+                    const py = (((info >> 24) & 0xff) << 24) >> 24;
+                    const shape = getShape(ptype, prot);
+                    for (let row = 0; row < 4; row++) {
+                        for (let col = 0; col < 4; col++) {
+                            if (((shape[row] >> (3 - col)) & 1) === 0) continue;
+                            const sx = px + col,
+                                sy = py + row;
+                            if (sx >= 0 && sx < BW && sy >= 0 && sy < BH) {
+                                ctx.fillStyle = colors[ptype + 1];
+                                ctx.fillRect(
+                                    sx * CELL,
+                                    sy * CELL,
+                                    CELL - 1,
+                                    CELL - 1,
+                                );
+                            }
+                        }
+                    }
+                    const next = w.tetris_get_next();
+                    ctx.fillStyle = "#161b22";
+                    ctx.fillRect(BW * CELL + 10, 10, 100, 80);
+                    ctx.fillStyle = "#8b949e";
+                    ctx.font = "12px system-ui";
+                    ctx.fillText("NEXT", BW * CELL + 40, 25);
+                    const ns = SHAPES[next],
+                        sz = next === 0 ? 4 : 3;
+                    for (let r = 0; r < sz; r++)
+                        for (let c = 0; c < sz; c++) {
+                            if (((ns[r] >> (3 - c)) & 1) === 0) continue;
+                            ctx.fillStyle = colors[next + 1];
+                            ctx.fillRect(
+                                BW * CELL + 20 + c * 18,
+                                35 + r * 18,
+                                16,
+                                16,
+                            );
+                        }
+                    document.getElementById("info").textContent =
+                        `得分: ${w.tetris_get_score()}`;
+                }
+                draw();
+                function loop(ts) {
+                    if (over) return;
+                    if (ts - last >= 400) {
+                        last = ts;
+                        w.tetris_step();
+                        if (w.tetris_is_game_over()) {
+                            over = true;
+                            document.getElementById("info").textContent =
+                                `游戏结束! 得分: ${w.tetris_get_score()}`;
+                            draw();
+                            return;
+                        }
+                    }
+                    draw();
+                    animId = requestAnimationFrame(loop);
+                }
+                animId = requestAnimationFrame(loop);
+                globalKey = (e) => {
+                    if (over) return;
+                    switch (e.key) {
+                        case "ArrowLeft":
+                            e.preventDefault();
+                            w.tetris_move_left();
+                            break;
+                        case "ArrowRight":
+                            e.preventDefault();
+                            w.tetris_move_right();
+                            break;
+                        case "ArrowDown":
+                            e.preventDefault();
+                            w.tetris_step();
+                            break;
+                        case "ArrowUp":
+                            e.preventDefault();
+                            w.tetris_rotate();
+                            break;
+                        case " ":
+                            e.preventDefault();
+                            w.tetris_hard_drop();
+                            break;
+                    }
+                };
+                document.addEventListener("keydown", globalKey);
+                gameLoop = { stop() {} };
+            }
+
+            // ── 2048 ──
+            async function start2048() {
+                const lm = await loadWasm("game2048"),
+                    w = lm.exports;
+                const CELL = 76,
+                    GAP = 6,
+                    SZ = 4;
+                canvas.width = SZ * CELL + GAP;
+                canvas.height = SZ * CELL + GAP;
+                document.getElementById("ctrls").textContent =
+                    "方向键/WASD 移动";
+                const tileColors = {
+                    0: "#1c2128",
+                    2: "#eee",
+                    4: "#d29922",
+                    8: "#f0883e",
+                    16: "#f85149",
+                    32: "#a371f7",
+                    64: "#58a6ff",
+                    128: "#3fb950",
+                    256: "#79c0ff",
+                    512: "#40c463",
+                    1024: "#d2a8ff",
+                    2048: "#f0c040",
+                };
+                let over = false,
+                    won = false;
+                w.game2048_init(Date.now() >>> 0);
+                function draw() {
+                    ctx.fillStyle = "#0d1117";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    const base = w.game2048_get_grid();
+                    const base16 = base >>> 1;
+                    const m16 = lm.m16;
+                    for (let i = 0; i < 16; i++) {
+                        const v = m16[base16 + i],
+                            x = (i % SZ) * CELL + GAP,
+                            y = Math.floor(i / SZ) * CELL + GAP;
+                        ctx.fillStyle = tileColors[v] || "#d2a8ff";
+                        ctx.fillRect(x, y, CELL - GAP, CELL - GAP);
+                        if (v > 0) {
+                            ctx.fillStyle = v <= 4 ? "#0d1117" : "#fff";
+                            ctx.font = "bold 24px system-ui";
+                            ctx.textAlign = "center";
+                            ctx.textBaseline = "middle";
+                            ctx.fillText(v, x + CELL / 2 - 3, y + CELL / 2);
+                        }
+                    }
+                    won = w.game2048_has_won();
+                    document.getElementById("info").textContent =
+                        `得分: ${w.game2048_get_score()}${over ? "  游戏结束!" : ""}${won ? "  🎉 2048!" : ""}`;
+                }
+                draw();
+                globalKey = (e) => {
+                    if (over) return;
+                    const d = {
+                        ArrowUp: 0,
+                        ArrowDown: 1,
+                        ArrowLeft: 2,
+                        ArrowRight: 3,
+                        w: 0,
+                        s: 1,
+                        a: 2,
+                        d: 3,
+                    }[e.key];
+                    if (d !== undefined) {
+                        e.preventDefault();
+                        w.game2048_move(d);
+                        over = !!w.game2048_is_game_over();
+                        draw();
+                    }
+                };
+                document.addEventListener("keydown", globalKey);
+                gameLoop = { stop() {} };
+            }
+
+            // ── 生命游戏 ──
+            async function startLife() {
+                const lm = await loadWasm("life"),
+                    w = lm.exports;
+                const W = w.life_get_width(),
+                    H = w.life_get_height(),
+                    CELL = 12;
+                canvas.width = W * CELL;
+                canvas.height = H * CELL;
+                document.getElementById("ctrls").textContent =
+                    "空格:暂停 | R:重置 | 点击:翻转细胞 | 自动演化中...";
+                let last = 0,
+                    paused = false;
+                w.life_init(Date.now() >>> 0);
+                function draw() {
+                    ctx.fillStyle = "#0d1117";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    const base = w.life_get_grid();
+                    const m8 = lm.m8;
+                    for (let y = 0; y < H; y++)
+                        for (let x = 0; x < W; x++) {
+                            if (m8[base + y * W + x]) {
+                                ctx.fillStyle = "#3fb950";
+                                ctx.fillRect(
+                                    x * CELL,
+                                    y * CELL,
+                                    CELL - 1,
+                                    CELL - 1,
+                                );
+                            }
+                        }
+                    document.getElementById("info").textContent =
+                        `第 ${w.life_get_generation()} 代${paused ? "  ⏸暂停" : ""}`;
+                }
+                draw();
+                function loop(ts) {
+                    if (!paused && ts - last >= 100) {
+                        last = ts;
+                        w.life_step();
+                    }
+                    draw();
+                    animId = requestAnimationFrame(loop);
+                }
+                animId = requestAnimationFrame(loop);
+                globalKey = (e) => {
+                    if (e.key === " ") {
+                        e.preventDefault();
+                        paused = !paused;
+                    } else if (e.key === "r" || e.key === "R") {
+                        e.preventDefault();
+                        w.life_randomize(Date.now() >>> 0);
+                    }
+                };
+                document.addEventListener("keydown", globalKey);
+                canvas.addEventListener("click", (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor((e.clientX - rect.left) / CELL);
+                    const y = Math.floor((e.clientY - rect.top) / CELL);
+                    if (x >= 0 && x < W && y >= 0 && y < H) w.life_toggle(x, y);
+                });
+                gameLoop = { stop() {} };
+            }
+
+            // ── 光线追踪 ──
+            async function startRaytrace() {
+                const lm = await loadWasm("raytrace"),
+                    w = lm.exports;
+                const W = w.raytrace_get_width(),
+                    H = w.raytrace_get_height();
+                canvas.width = W;
+                canvas.height = H;
+                document.getElementById("ctrls").textContent = "正在渲染...";
+                document.getElementById("info").textContent =
+                    "光线追踪 400×300 | 3 球体 + 地面 + 阴影";
+
+                // 触发渲染（异步，不阻塞）
+                setTimeout(() => w.raytrace_render(), 10);
+
+                function draw() {
+                    if (!w.raytrace_is_done()) {
+                        ctx.fillStyle = "#0d1117";
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.fillStyle = "#58a6ff";
+                        ctx.font = "16px system-ui";
+                        ctx.textAlign = "center";
+                        ctx.fillText(
+                            "渲染中...",
+                            canvas.width / 2,
+                            canvas.height / 2,
+                        );
+                        document.getElementById("ctrls").textContent =
+                            "正在渲染...";
+                        animId = requestAnimationFrame(draw);
+                        return;
+                    }
+                    const base = w.raytrace_get_pixels();
+                    const m8 = lm.m8;
+                    const imgData = ctx.createImageData(W, H);
+                    for (let i = 0; i < W * H; i++) {
+                        imgData.data[i * 4] = m8[base + i * 3]; // R
+                        imgData.data[i * 4 + 1] = m8[base + i * 3 + 1]; // G
+                        imgData.data[i * 4 + 2] = m8[base + i * 3 + 2]; // B
+                        imgData.data[i * 4 + 3] = 255; // A
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+                    document.getElementById("ctrls").textContent =
+                        "渲染完成! 400×300";
+                }
+                animId = requestAnimationFrame(draw);
+                gameLoop = { stop() {} };
+            }
+
+            switchGame("snake");
+        </script>
+    </body>
+</html>
