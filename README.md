@@ -70,8 +70,8 @@ zig build build-raytrace   # 光线追踪独立 exe
 
 ```bash
 zig build wasm
-# 产物在 www/wasm/ 下
-# 用任意静态服务器打开 www/index.html
+# 产物在 zig-out/www/ 下
+# 部署：cd zig-out/www && python3 -m http.server```
 ```
 
 ---

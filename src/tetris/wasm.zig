@@ -239,6 +239,17 @@ fn spawnPiece() void {
 // 导出函数（JavaScript 通过 WebAssembly 调用）
 // ═══════════════════════════════════════════════════════════════
 
+/// tetris_get_shape 的输出缓冲区
+var shape_out: [4]u8 = undefined;
+
+/// 获取指定类型的方块形状（4 行，每行 u8 低 4 位有效）。
+/// rotation: 0-3，顺时针旋转次数。
+/// 返回指向 4 字节缓冲区的指针，JS 用 Uint8Array[m8] 读取。
+export fn tetris_get_shape(piece_type: u8, rotation: u8) [*]u8 {
+    shape_out = getShape(piece_type, rotation);
+    return &shape_out;
+}
+
 /// 初始化游戏。seed 从 JS 传入（如 Date.now()）。
 export fn tetris_init(seed: u32) void {
     // 清空棋盘

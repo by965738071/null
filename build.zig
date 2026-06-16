@@ -79,19 +79,21 @@ pub fn build(b: *std.Build) void {
     // ═══════════════════════════════════════════════════════
     // WASM 游戏编译
     // ═══════════════════════════════════════════════════════
+    //
+    // 产物通过 addInstallFile 安装到 zig-out/www/ 下。
+    // 部署：cd zig-out/www && python3 -m http.server
 
     const wasm_step = b.step("wasm", "Build all WASM games for web");
 
     const wasm_games = [_]struct { name: []const u8, exports: []const []const u8 }{
         .{ .name = "snake", .exports = &.{ "snake_init", "snake_step", "snake_set_direction", "snake_get_state", "snake_get_len", "snake_get_food", "snake_is_game_over", "snake_get_score", "snake_get_width", "snake_get_height" } },
-        .{ .name = "tetris", .exports = &.{ "tetris_init", "tetris_step", "tetris_move_left", "tetris_move_right", "tetris_rotate", "tetris_hard_drop", "tetris_get_board", "tetris_get_piece_info", "tetris_get_score", "tetris_get_next", "tetris_is_game_over" } },
+        .{ .name = "tetris", .exports = &.{ "tetris_init", "tetris_step", "tetris_move_left", "tetris_move_right", "tetris_rotate", "tetris_hard_drop", "tetris_get_board", "tetris_get_piece_info", "tetris_get_score", "tetris_get_next", "tetris_get_shape", "tetris_is_game_over" } },
         .{ .name = "game2048", .exports = &.{ "game2048_init", "game2048_move", "game2048_get_grid", "game2048_get_score", "game2048_is_game_over", "game2048_has_won" } },
         .{ .name = "life", .exports = &.{ "life_init", "life_step", "life_get_grid", "life_get_width", "life_get_height", "life_get_generation", "life_toggle", "life_randomize" } },
         .{ .name = "raytrace", .exports = &.{ "raytrace_render", "raytrace_get_pixels", "raytrace_get_width", "raytrace_get_height", "raytrace_is_done" } },
     };
 
     for (wasm_games) |game| {
-        // 构建参数列表：调用 zig build-exe 编译 freestanding WASM
         var args = std.ArrayList([]const u8).initCapacity(b.allocator, 32) catch @panic("OOM");
         args.appendSlice(b.allocator, &.{ b.graph.zig_exe, "build-exe", b.fmt("src/{s}/wasm.zig", .{game.name}), "--name", game.name, "-target", "wasm32-freestanding", "-fno-entry", "-OReleaseSmall" }) catch @panic("OOM");
         for (game.exports) |exp| {
@@ -104,7 +106,7 @@ pub fn build(b: *std.Build) void {
         wasm_step.dependOn(&install.step);
     }
 
-    // 复制 HTML
+    // 复制 HTML 到 zig-out/www/
     const install_html = b.addInstallFile(b.path("www/index.html"), "www/index.html");
     wasm_step.dependOn(&install_html.step);
 }

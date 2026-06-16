@@ -61,30 +61,41 @@ fn random(seed: *u32) u16 {
     return @truncate(x);
 }
 
-/// 在新位置生成食物（避开蛇身）
+/// 在新位置生成食物（避开蛇身）。
+/// 使用全格扫描 + 随机选取，避免蛇长时随机重试效率低下的问题。
 fn spawnFood() void {
-    var s: u32 = state.seed;
-    while (true) {
-        const x = random(&s) % WIDTH;
-        const y = random(&s) % HEIGHT;
-        state.seed = s;
+    // 扫描所有格子，收集空格坐标
+    var empty_buf: [WIDTH * HEIGHT]u16 = undefined;
+    var count: u16 = 0;
 
-        // 确保不生成在蛇身上
-        var on_snake = false;
-        var i: u16 = 0;
-        while (i < state.snake_len) : (i += 1) {
-            if (state.snake_x[i] == x and state.snake_y[i] == y) {
-                on_snake = true;
-                break;
+    var y: u16 = 0;
+    while (y < HEIGHT) : (y += 1) {
+        var x: u16 = 0;
+        while (x < WIDTH) : (x += 1) {
+            var on_snake = false;
+            var i: u16 = 0;
+            while (i < state.snake_len) : (i += 1) {
+                if (state.snake_x[i] == x and state.snake_y[i] == y) {
+                    on_snake = true;
+                    break;
+                }
+            }
+            if (!on_snake) {
+                empty_buf[count] = y * WIDTH + x;
+                count += 1;
             }
         }
-        if (!on_snake) {
-            state.food_x = x;
-            state.food_y = y;
-            return;
-        }
-        s +%= 1; // 防止死循环
     }
+
+    if (count == 0) {
+        state.food_x = 0;
+        state.food_y = 0;
+        return;
+    }
+
+    const r = random(&state.seed) % count;
+    state.food_x = @intCast(empty_buf[r] % WIDTH);
+    state.food_y = @intCast(empty_buf[r] / WIDTH);
 }
 
 // ═══════════════════════════════════════════════════════════════
