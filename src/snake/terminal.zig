@@ -218,8 +218,8 @@ const Game = struct {
     fn spawnFood(self: *Game) void {
         const rand = self.rng.random();
         while (true) {
-            const x = rand.uintAtMost(u16, self.width - 2) + 1;
-            const y = rand.uintAtMost(u16, self.height - 2) + 1;
+            const x = rand.intRangeLessThan(u16, 1, self.width - 1);
+            const y = rand.intRangeLessThan(u16, 1, self.height - 1);
             if (!isOccupied(self, x, y)) { // 找个空位
                 self.food = .{ .x = x, .y = y };
                 break;
@@ -233,8 +233,8 @@ const Game = struct {
         const rand = self.rng.random();
         var attempts: u16 = 0;
         while (attempts < 100) : (attempts += 1) {
-            const x = rand.uintAtMost(u16, self.width - 2) + 1;
-            const y = rand.uintAtMost(u16, self.height - 2) + 1;
+            const x = rand.intRangeLessThan(u16, 1, self.width - 1);
+            const y = rand.intRangeLessThan(u16, 1, self.height - 1);
             // 不能和食物重叠，不能和蛇身/障碍物重叠
             if (!isOccupied(self, x, y) and !(x == self.food.x and y == self.food.y)) {
                 self.boost = .{ .x = x, .y = y };
@@ -453,12 +453,14 @@ const Renderer = struct {
         // 光标回左上角（重绘整个画面，避免闪烁）
         try w.writeAll("\x1b[H");
 
-        // ── 顶部边框：┌─────┐ ──
+        // ── 顶部边框（每个游戏单元 = 2 字符宽，使视觉正方形）──
         try w.writeAll("┌");
-        for (0..game.width - 2) |_| try w.writeAll("─");
+        for (0..game.width - 2) |_| try w.writeAll("──");
         try w.writeAll("┐\r\n");
 
         // ── 游戏区域（逐行逐列）──
+        // 每个游戏单元渲染为 2 个字符宽（██），
+        // 配合终端字符约 1:2 宽高比，视觉上接近正方形
         var y: u16 = 1;
         while (y < game.height - 1) : (y += 1) {
             try w.writeAll("│"); // 左边框
@@ -467,39 +469,39 @@ const Renderer = struct {
                 // 按优先级检查每个格子画什么
                 if (game.boost) |b| {
                     if (b.x == x and b.y == y) {
-                        try w.writeAll("\x1b[33m★\x1b[0m"); // 金色星星 = 加速道具
+                        try w.writeAll("\x1b[33m★★\x1b[0m"); // 金色星星 = 加速道具
                         continue; // 跳到下一个 x
                     }
                 }
                 if (game.food.x == x and game.food.y == y) {
-                    try w.writeAll("\x1b[31m●\x1b[0m"); // 红色圆点 = 普通食物
+                    try w.writeAll("\x1b[31m●●\x1b[0m"); // 红色圆点 = 普通食物
                 } else if (isObstacleAt(game, x, y)) {
-                    try w.writeAll("\x1b[90m▓\x1b[0m"); // 灰色方块 = 障碍物
+                    try w.writeAll("\x1b[90m▓▓\x1b[0m"); // 灰色方块 = 障碍物
                 } else if (snakeAt(game, x, y)) |seg_index| {
                     // 找到了蛇身，seg_index 是该节的索引（0 = 蛇头）
                     if (seg_index == 0) {
-                        // 蛇头：加速时金色 ◆，平时绿色 ■
+                        // 蛇头：加速时金色，平时绿色
                         if (game.boost_remaining > 0) {
-                            try w.writeAll("\x1b[33m◆\x1b[0m");
+                            try w.writeAll("\x1b[33m◆◆\x1b[0m");
                         } else {
-                            try w.writeAll("\x1b[32m■\x1b[0m");
+                            try w.writeAll("\x1b[32m██\x1b[0m");
                         }
                     } else {
                         // 蛇身：彩虹渐变色
                         try w.writeAll(rainbowColor(seg_index - 1));
-                        try w.writeAll("■");
+                        try w.writeAll("██");
                         try w.writeAll("\x1b[0m"); // 重置颜色
                     }
                 } else {
-                    try w.writeAll(" "); // 空格
+                    try w.writeAll("  "); // 空格（2 个字符宽）
                 }
             }
             try w.writeAll("│\r\n"); // 右边框 + 换行
         }
 
-        // ── 底部边框：└─────┘ ──
+        // ── 底部边框 ──
         try w.writeAll("└");
-        for (0..game.width - 2) |_| try w.writeAll("─");
+        for (0..game.width - 2) |_| try w.writeAll("──");
         try w.writeAll("┘\r\n");
 
         // ── 状态信息栏 ──
