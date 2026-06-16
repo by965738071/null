@@ -178,15 +178,15 @@ const Game = struct {
         };
 
         // 初始化完成后生成障碍物（需要避开蛇的出生点）
-        game.spawnObstacles(allocator) catch {};
+        try game.spawnObstacles();
 
         return game;
     }
 
     /// 释放游戏占用的内存。
-    pub fn deinit(self: *Game, allocator: mem.Allocator) void {
-        self.snake.body.deinit(allocator);
-        self.obstacles.deinit(allocator);
+    pub fn deinit(self: *Game) void {
+        self.snake.body.deinit(self.allocator);
+        self.obstacles.deinit(self.allocator);
     }
 
     /// 在地图上随机放置障碍物。
@@ -196,20 +196,19 @@ const Game = struct {
     ///   - 不能放在蛇出生点附近（3 格范围内）
     ///   - 不能重叠
     ///   - 最多尝试 200 次（防止地图太小放不下）
-    fn spawnObstacles(self: *Game, allocator: mem.Allocator) !void {
+    fn spawnObstacles(self: *Game) !void {
         const rand = self.rng.random();
         const obstacle_count: u16 = 5;
 
         var attempts: u16 = 0;
         while (self.obstacles.items.len < obstacle_count and attempts < 200) : (attempts += 1) {
-            // 在内部区域生成，留 2 格边距
             const x = rand.uintAtMost(u16, self.width - 4) + 2;
             const y = rand.uintAtMost(u16, self.height - 4) + 2;
 
-            if (isNearSnakeStart(self, x, y)) continue; // 不能挡出生点
-            if (isObstacleAt(self, x, y)) continue; // 不能重叠
+            if (isNearSnakeStart(self, x, y)) continue;
+            if (isObstacleAt(self, x, y)) continue;
 
-            try self.obstacles.append(allocator, .{ .x = x, .y = y });
+            try self.obstacles.append(self.allocator, .{ .x = x, .y = y });
         }
     }
 
@@ -254,7 +253,7 @@ const Game = struct {
     ///   5. 检查是否吃到东西（食物 → 增长；道具 → 加速）
     ///   6. 没吃到 → 移除蛇尾（保持长度不变）
     ///   7. 更新加速状态和道具冷却
-    fn step(self: *Game, allocator: mem.Allocator) !void {
+    fn step(self: *Game) !void {
         if (self.paused) return; // 暂停时不更新
 
         // 应用缓冲的方向
@@ -306,7 +305,7 @@ const Game = struct {
 
         // ── 3. 移动蛇 ──
         // insert(0, ...) 把新蛇头插入到列表开头，O(n) 但因为蛇不长所以没问题
-        try self.snake.body.insert(allocator, 0, new_head);
+        try self.snake.body.insert(self.allocator, 0, new_head);
 
         // ── 4. 吃食物判定 ──
         if (new_head.x == self.food.x and new_head.y == self.food.y) {
@@ -667,7 +666,7 @@ pub fn run(allocator: mem.Allocator, io: std.Io) !void {
     // 用当前时间戳（纳秒）作为随机种子
     const seed: u64 = @intCast(std.Io.Timestamp.now(io, .awake).nanoseconds);
     var game = try Game.init(allocator, width, height, seed, high_score);
-    defer game.deinit(allocator);
+    defer game.deinit();
 
     // 生成第一个食物
     game.spawnFood();
@@ -710,7 +709,7 @@ pub fn run(allocator: mem.Allocator, io: std.Io) !void {
         const elapsed_ms = last_step.durationTo(now).toMilliseconds();
         if (elapsed_ms >= game.speed_ms) {
             last_step = now;
-            try game.step(allocator);
+            try game.step();
         }
 
         // ── 渲染 ──
@@ -776,7 +775,7 @@ test "蛇初始状态" {
 test "蛇移动" {
     const allocator = std.testing.allocator;
     var game = try Game.init(allocator, 20, 20, 42, 0);
-    defer game.deinit(allocator);
+    defer game.deinit();
 
     // 清除障碍物，避免随机障碍物干扰测试
     game.obstacles.clearRetainingCapacity();
@@ -784,7 +783,7 @@ test "蛇移动" {
     const old_head = game.snake.body.items[0];
     const old_tail = game.snake.body.items[game.snake.body.items.len - 1];
 
-    try game.step(allocator);
+    try game.step();
 
     // 蛇头向前移动一格（方向朝右，x + 1）
     try std.testing.expectEqual(old_head.x + 1, game.snake.body.items[0].x);
@@ -802,7 +801,7 @@ test "蛇移动" {
 test "吃食物" {
     const allocator = std.testing.allocator;
     var game = try Game.init(allocator, 20, 20, 42, 0);
-    defer game.deinit(allocator);
+    defer game.deinit();
 
     // 清除障碍物
     game.obstacles.clearRetainingCapacity();
@@ -811,7 +810,7 @@ test "吃食物" {
     // 把食物放在蛇头正前方一格（方向朝右）
     game.food = .{ .x = head.x + 1, .y = head.y };
 
-    try game.step(allocator);
+    try game.step();
 
     // 吃到食物后分数增加（+10 分，非加速状态）
     try std.testing.expect(game.score > 0);
@@ -823,15 +822,15 @@ test "撞墙死亡" {
     const allocator = std.testing.allocator;
     // 使用 8×8 的小地图，蛇头起点 (4,4)，向右走 3 步后撞到右墙
     var game = try Game.init(allocator, 8, 8, 42, 0);
-    defer game.deinit(allocator);
+    defer game.deinit();
 
     // 清除障碍物，确保蛇能走到墙边
     game.obstacles.clearRetainingCapacity();
 
     // 走 2 步到达 x=6（最右安全格），第 3 步 x=7 即撞墙（width-1=7）
-    try game.step(allocator); // head: (4,4) → (5,4)
-    try game.step(allocator); // head: (5,4) → (6,4)
-    try game.step(allocator); // head: (6,4) → (7,4)，x>=7 撞墙
+    try game.step(); // head: (4,4) → (5,4)
+    try game.step(); // head: (5,4) → (6,4)
+    try game.step(); // head: (6,4) → (7,4)，x>=7 撞墙
 
     try std.testing.expect(!game.running);
 }
@@ -839,7 +838,7 @@ test "撞墙死亡" {
 test "撞自己死亡" {
     const allocator = std.testing.allocator;
     var game = try Game.init(allocator, 20, 20, 42, 0);
-    defer game.deinit(allocator);
+    defer game.deinit();
 
     // 清除障碍物
     game.obstacles.clearRetainingCapacity();
@@ -856,7 +855,7 @@ test "撞自己死亡" {
     game.next_direction = .right;
 
     // 蛇头 (5,5) 向右走一步到 (6,5)，撞到第 2 节身体 → 死亡
-    try game.step(allocator);
+    try game.step();
 
     try std.testing.expect(!game.running);
 }

@@ -4,7 +4,7 @@
 //! 所有终端游戏共享此模块，消除重复代码。
 //!
 //! 使用方式：
-//!   var term = try input.Terminal.enterRawMode();
+//!   var term = try input.init();
 //!   defer term.deinit();
 //!   while (try term.readKey()) |key| { ... }
 
